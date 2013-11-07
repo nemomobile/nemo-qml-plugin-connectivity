@@ -1,5 +1,5 @@
 /* Copyright (C) 2013 Jolla Ltd.
- * Contact: John Brooks <john.brooks@jolla.com>
+ * Contact: Chris Adams <chris.adams@jolla.com>
  *
  * You may use this file under the terms of the BSD license as follows:
  *
@@ -29,31 +29,48 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
  */
 
-#include <QtGlobal>
-#include <QtQml>
-#include <QQmlEngine>
-#include <QQmlExtensionPlugin>
+#include <QObject>
 
-#include "connectionhelper_p.h"
+#include <QNetworkConfigurationManager>
+#include <QNetworkSession>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
 
-class Q_DECL_EXPORT NemoConnectivityPlugin : public QQmlExtensionPlugin
+#include <QTimer>
+
+class ConnectionHelper : public QObject
 {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID "org.nemomobile.connectivity")
 
 public:
-    virtual ~NemoConnectivityPlugin() { }
+    ConnectionHelper(QObject *parent = 0);
+    ~ConnectionHelper();
 
-    void initializeEngine(QQmlEngine *engine, const char *uri)
-    {
-        Q_ASSERT(uri == QLatin1String("org.nemomobile.connectivity"));
-    }
+    Q_INVOKABLE bool haveNetworkConnectivity() const;
+    Q_INVOKABLE void attemptToConnectNetwork();
+    Q_INVOKABLE void closeNetworkSession();
 
-    void registerTypes(const char *uri)
-    {
-        Q_ASSERT(uri == QLatin1String("org.nemomobile.connectivity"));
-        qmlRegisterType<ConnectionHelper>("org.nemomobile.connectivity", 1, 0, "ConnectionHelper");
-    }
+Q_SIGNALS:
+    void networkConnectivityEstablished();
+    void networkConnectivityUnavailable();
+
+private Q_SLOTS:
+    void networkConfigurationUpdateCompleted();
+    void performRequest(bool expectSuccess);
+    void handleDummyRequestFinished();
+    void handleNetworkSessionError();
+    void handleNetworkSessionOpened();
+    void recheckDefaultConnection(bool isOnline);
+    void handleCanaryRequestError(const QNetworkReply::NetworkError &error);
+    void handleCanaryRequestFinished();
+    void emitFailureIfNeeded(); // due to timeout.
+
+private:
+    QTimer m_timeoutTimer;
+    QNetworkConfigurationManager *m_networkConfigManager;
+    QNetworkSession *m_networkDefaultSession;
+    QNetworkAccessManager *m_networkAccessManager;
+    bool m_networkConfigReady;
+    bool m_delayedAttemptToConnect;
+    bool m_detectingNetworkConnection;
 };
-
-#include "plugin.moc"
