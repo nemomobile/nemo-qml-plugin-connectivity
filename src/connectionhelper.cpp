@@ -149,7 +149,9 @@ void ConnectionHelper::attemptToConnectNetwork()
 
     if (!m_networkDefaultSession) {
         QNetworkConfiguration defaultConfig = m_networkConfigManager->defaultConfiguration();
-        if (!defaultConfig.isValid()) {
+        if (!defaultConfig.isValid()
+                || !defaultConfig.state().testFlag(QNetworkConfiguration::Active)
+                && !defaultConfig.state().testFlag(QNetworkConfiguration::Discovered)) {
             performRequest(false); // dummy request to trigger network connection dialog.
         } else {
             m_networkDefaultSession = new QNetworkSession(defaultConfig);
