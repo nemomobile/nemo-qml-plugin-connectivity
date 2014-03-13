@@ -34,53 +34,37 @@
 #include <QTimer>
 #include <QUrl>
 #include <QString>
+#include <QtDBus/QDBusMessage>
+#include <connman-qt5/networkmanager.h>
 
 ConnectionHelper::ConnectionHelper(QObject *parent)
     : QObject(parent)
-    , m_networkConfigManager(new QNetworkConfigurationManager(this))
-    , m_networkDefaultSession(0)
     , m_networkAccessManager(0)
     , m_networkConfigReady(false)
     , m_delayedAttemptToConnect(false)
     , m_detectingNetworkConnection(false)
+    , netman(NetworkManagerFactory::createInstance())
 {
     connect(&m_timeoutTimer, SIGNAL(timeout()), this, SLOT(emitFailureIfNeeded()));
     m_timeoutTimer.setSingleShot(true);
-    m_timeoutTimer.setInterval(120000); // 2 minutes
+    m_timeoutTimer.setInterval(300000); // 5 minutes
 
-    connect(m_networkConfigManager, SIGNAL(updateCompleted()),
-            this, SLOT(networkConfigurationUpdateCompleted()), Qt::QueuedConnection);
-    connect(m_networkConfigManager, SIGNAL(onlineStateChanged(bool)),
-            this, SLOT(recheckDefaultConnection(bool)), Qt::QueuedConnection);
-    m_networkConfigManager->updateConfigurations();
+    connect(netman,SIGNAL(availabilityChanged(bool)),this,SLOT(connmanAvailableChanged(bool)));
+    connect(netman,SIGNAL(stateChanged(QString)),this,SLOT(networkStateChanged(QString)));
 }
 
 ConnectionHelper::~ConnectionHelper()
 {
-    closeNetworkSession();
 }
 
-void ConnectionHelper::networkConfigurationUpdateCompleted()
+void ConnectionHelper::connmanAvailableChanged(bool available)
 {
-    m_networkConfigReady = true;
-    if (m_delayedAttemptToConnect) {
-        m_delayedAttemptToConnect = false;
-        attemptToConnectNetwork();
-    }
-}
-
-/*
-    Closes the network session which is being held open by
-    the ConnectionHelper.  Note that if something else is
-    holding an open session with the default configuration,
-    the network configuration will remain online.
-*/
-void ConnectionHelper::closeNetworkSession()
-{
-    if (m_networkDefaultSession) {
-        m_networkDefaultSession->close();
-        m_networkDefaultSession->deleteLater();
-        m_networkDefaultSession = 0;
+    if (available) {
+        m_networkConfigReady = true;
+        if (m_delayedAttemptToConnect) {
+            m_delayedAttemptToConnect = false;
+            attemptToConnectNetwork();
+        }
     }
 }
 
@@ -105,14 +89,8 @@ void ConnectionHelper::closeNetworkSession()
 */
 bool ConnectionHelper::haveNetworkConnectivity() const
 {
-    if (m_networkDefaultSession && m_networkDefaultSession->isOpen()) {
+    if (netman->defaultRoute()->connected())
         return true;
-    }
-    QNetworkConfiguration defaultConfig = m_networkConfigManager->defaultConfiguration();
-    if (defaultConfig.state() == QNetworkConfiguration::Active
-            || defaultConfig.state() == QNetworkConfiguration::Discovered) {
-        return true;
-    }
     return false;
 }
 
@@ -126,128 +104,41 @@ bool ConnectionHelper::haveNetworkConnectivity() const
     be prompted to add a valid network configuration (eg, connect to wlan).
 
     If the user does add a valid configuration, the connection helper
-    will then attempt to connect with that configuration and will emit
+    will emit
     networkConnectivityEstablished() if it succeeds, or
     networkConnectivityUnavailable() if it fails.
 
-    If the user rejects the dialog, the connection helper will not know
-    and so will NOT emit networkConnectivityUnavailable() until the
-    request times out (2 minutes) at which point it will be emitted.
+    If the user rejects the dialog, the connection helper emit networkConnectivityUnavailable()
+    or until the request times out (5 minutes) at which point it will be emitted.
 */
 void ConnectionHelper::attemptToConnectNetwork()
 {
+
     // set up a timeout error emission trigger after 2 minutes, unless we manage to connect in the meantime.
     m_detectingNetworkConnection = true;
-    m_timeoutTimer.start(120000);
+    m_timeoutTimer.start(300000);
 
-    // attempt to check the default network configuration.
-    if (!m_networkConfigReady) {
-        // we need to queue up attemptToConnectNetwork() once we've finished scanning network configurations.
-        m_delayedAttemptToConnect = true;
-        return;
-    }
-
-    if (!m_networkDefaultSession) {
-        QNetworkConfiguration defaultConfig = m_networkConfigManager->defaultConfiguration();
-        if (!defaultConfig.isValid()) {
-            performRequest(false); // dummy request to trigger network connection dialog.
+    if (netman->defaultRoute()->state() != "online") {
+        if (netman->defaultRoute()->state() == "ready") {
+            // we already have an open session, but something isn't quite right.  Ensure that the
+            // connection is usable (not blocked by a Captive Portal).
+            performRequest(/*true*/);
         } else {
-            m_networkDefaultSession = new QNetworkSession(defaultConfig);
-
-            // note that we re-create the signal connections each time
-            // this is so that we can avoid spurious signal emissions
-            // due to connection state changes.
-            connect(m_networkDefaultSession, SIGNAL(error(QNetworkSession::SessionError)),
-                    this, SLOT(handleNetworkSessionError()));
-            connect(m_networkDefaultSession, SIGNAL(opened()),
-                    this, SLOT(handleNetworkSessionOpened()));
-            m_networkDefaultSession->open();
+            // let's ask user for connection
+            openConnectionDialog();
         }
     } else {
-        // we already have an open session.  Ensure that the
-        // connection is usable (not blocked by a Captive Portal).
-        performRequest(true);
-    }
-}
-
-void ConnectionHelper::recheckDefaultConnection(bool isOnline)
-{
-    // The online state of the connection manager changed.
-    // This means that the network may now be available
-    // or unavailable, depending on circumstances.
-    // Find out which it is, and emit appropriately.
-    if (!isOnline) {
-        // probably already false/closed, but just in case...
+        // we are online and connman's online check has passed. Everything is ok
         m_detectingNetworkConnection = false;
-        closeNetworkSession();
-
-        // emit networkConnectivityUnavailable, in case clients are depending on it.
-        QMetaObject::invokeMethod(this, "networkConnectivityUnavailable", Qt::QueuedConnection);
-        return;
+        emit networkConnectivityEstablished();
     }
-
-    // a connection has been added, so the default configuration may have changed.
-    QNetworkConfiguration defaultConfig = m_networkConfigManager->defaultConfiguration();
-    if (!defaultConfig.isValid()) {
-        // even after connecting, we still don't have a valid default configuration.  Fail.
-        m_networkConfigReady = false;
-        m_networkConfigManager->updateConfigurations();
-        QMetaObject::invokeMethod(this, "networkConnectivityUnavailable", Qt::QueuedConnection);
-        return;
-    }
-
-    // If isOnline is true, then we have access to a network
-    // but we don't know whether it's usable.  It may be blocked
-    // by a Captive Portal, for example.  Find out.
-    if (m_networkDefaultSession) {
-        if (m_networkDefaultSession->isOpen()) {
-            // connected in the meantime.  Attempt a "real" network request to check usability.
-            performRequest(true);
-            return;
-        } else if (m_networkDefaultSession->configuration() == defaultConfig) {
-            // the default configuration hasn't changed, but perhaps it
-            // is now available where before it was not.  Attempt to connect.
-
-            // note that we re-create the signal connections each time
-            // this is so that we can avoid spurious signal emissions
-            // due to connection state changes which occur later.
-            connect(m_networkDefaultSession, SIGNAL(error(QNetworkSession::SessionError)),
-                    this, SLOT(handleNetworkSessionError()));
-            connect(m_networkDefaultSession, SIGNAL(opened()),
-                    this, SLOT(handleNetworkSessionOpened()));
-            m_networkDefaultSession->open();
-            return;
-        }
-    }
-
-    // we need to recreate the default session to ensure that the correct
-    // configuration is used.
-    closeNetworkSession();
-
-    // After triggering the dummy request, we have a new network connection.
-    // We now detect the state of that connection - if we can bring it online,
-    // then we emit networkConnectivityEstablished(); otherwise, we emit
-    // networkConnectivityUnavailable().
-    m_networkDefaultSession = new QNetworkSession(defaultConfig);
-
-    // note that we re-create the signal connections each time
-    // this is so that we can avoid spurious signal emissions
-    // due to connection state changes which occur later.
-    connect(m_networkDefaultSession, SIGNAL(error(QNetworkSession::SessionError)),
-            this, SLOT(handleNetworkSessionError()));
-    connect(m_networkDefaultSession, SIGNAL(opened()),
-            this, SLOT(handleNetworkSessionOpened()));
-    m_networkDefaultSession->open();
 }
 
-void ConnectionHelper::performRequest(bool expectSuccess)
+void ConnectionHelper::performRequest()
 {
-    // The QNetworkAccessManager of the QML engine always uses the
-    // default connection (unless it was changed via the factory hook).
-    // If the default connection is not valid, it means that the user
-    // has not yet connected to a network (wireless LAN or cellular data).
-    // In order to prompt the user to add a connection, we perform a
-    // "dummy" get request using a QNetworkAccessManager.
+    // sometimes connman service can be in 'ready' state but can still be used.
+    // In this case, let perform our own online check, just to be sure
+
     if (!m_networkAccessManager) {
         m_networkAccessManager = new QNetworkAccessManager(this);
     }
@@ -264,43 +155,12 @@ void ConnectionHelper::performRequest(bool expectSuccess)
         return;
     }
 
-    if (!expectSuccess) {
-        // We expect this request to fail, since it will take the user some time
-        // to select the network they wish to connect to, and connect to it.
-        // However, some time after this request fails, we should see the online
-        // state of the QNetworkConfigurationManager change, which will trigger
-        // the recheckDefaultConnection() slot.
-        connect(reply, SIGNAL(finished()), this, SLOT(handleDummyRequestFinished()));
-    } else {
-        // We expect this request to succeed if the connection has been brought
-        // online successfully.  It may fail if, for example, the interface is waiting
-        // for a Captive Portal redirect, in which case we should consider network
-        // connectivity to be unavailable (as it requires user intervention).
-        connect(reply, SIGNAL(finished()), this, SLOT(handleCanaryRequestFinished()));
-        connect(reply, SIGNAL(error(QNetworkReply::NetworkError)), this, SLOT(handleCanaryRequestError(QNetworkReply::NetworkError)));
-    }
-}
-
-void ConnectionHelper::handleDummyRequestFinished()
-{
-    QNetworkReply *dummyReply = qobject_cast<QNetworkReply*>(sender());
-    dummyReply->deleteLater();
-}
-
-void ConnectionHelper::handleNetworkSessionError()
-{
-    m_detectingNetworkConnection = false;
-    m_networkDefaultSession->disconnect();
-    emit networkConnectivityUnavailable();
-}
-
-void ConnectionHelper::handleNetworkSessionOpened()
-{
-    // we have an open session with the default connection.
-    // attempt a "real" request to determine the usability
-    // of the connection.
-    m_networkDefaultSession->disconnect(); // not interested in signals from it now.
-    performRequest(true);
+    // We expect this request to succeed if the connection has been brought
+    // online successfully.  It may fail if, for example, the interface is waiting
+    // for a Captive Portal redirect, in which case we should consider network
+    // connectivity to be unavailable (as it requires user intervention).
+    connect(reply, SIGNAL(finished()), this, SLOT(handleCanaryRequestFinished()));
+    connect(reply, SIGNAL(error(QNetworkReply::NetworkError)), this, SLOT(handleCanaryRequestError(QNetworkReply::NetworkError)));
 }
 
 void ConnectionHelper::handleCanaryRequestError(const QNetworkReply::NetworkError &)
@@ -331,4 +191,62 @@ void ConnectionHelper::emitFailureIfNeeded()
         m_detectingNetworkConnection = false;
         QMetaObject::invokeMethod(this, "networkConnectivityUnavailable", Qt::QueuedConnection);
     }
+}
+
+void ConnectionHelper::openConnectionDialog()
+{
+    // open Connection Selector
+
+    QDBusInterface *connSelectorInterface = new QDBusInterface(QStringLiteral("com.jolla.lipstick.ConnectionSelector"),
+                                                               QStringLiteral("/"),
+                                                               QStringLiteral("com.jolla.lipstick.ConnectionSelectorIf"),
+                                                               QDBusConnection::sessionBus(),
+                                                               this);
+
+    connSelectorInterface->connection().connect(QStringLiteral("com.jolla.lipstick.ConnectionSelector"),
+                                                QStringLiteral("/"),
+                                                QStringLiteral("com.jolla.lipstick.ConnectionSelectorIf"),
+                                                QStringLiteral("connectionSelectorClosed"),
+                                                this,
+                                                SLOT(connectionSelectorClosed(bool)));
+
+    QList<QVariant> args;
+    args.append("wlan");
+    QDBusMessage reply = connSelectorInterface->callWithArgumentList(QDBus::NoBlock,
+                                                                     QStringLiteral("openConnection"), args);
+
+    if (reply.type() != QDBusMessage::ReplyMessage) {
+        qWarning() << reply.errorMessage();
+        serviceErrorChanged(reply.errorMessage());
+    }
+}
+
+void ConnectionHelper::connectionSelectorClosed(bool b)
+{
+    if (!b) {
+        //canceled
+        emit networkConnectivityUnavailable();
+    }
+}
+
+void ConnectionHelper::defaultSessionConnectedChanged(bool b)
+{
+    if (b) {
+        m_detectingNetworkConnection = false;
+        emit networkConnectivityEstablished();
+    }
+}
+
+void ConnectionHelper::serviceErrorChanged(const QString &errorString)
+{
+    if (errorString.isEmpty())
+        return;
+    m_detectingNetworkConnection = false;
+    emit networkConnectivityUnavailable();
+}
+
+void ConnectionHelper::networkStateChanged(const QString &state)
+{
+    if (m_detectingNetworkConnection && state == "online") //only online, as ready may or may not mean good connection
+        defaultSessionConnectedChanged(true);
 }
