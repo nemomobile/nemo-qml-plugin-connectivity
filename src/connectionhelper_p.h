@@ -36,6 +36,10 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 
+#include <connman-qt5/networkmanager.h>
+#include <connman-qt5/networktechnology.h>
+#include <connman-qt5/networkservice.h>
+
 #include <QTimer>
 
 class ConnectionHelper : public QObject
@@ -55,22 +59,27 @@ Q_SIGNALS:
     void networkConnectivityUnavailable();
 
 private Q_SLOTS:
-    void networkConfigurationUpdateCompleted();
-    void performRequest(bool expectSuccess);
-    void handleDummyRequestFinished();
+    void performRequest();
     void handleNetworkSessionError();
-    void handleNetworkSessionOpened();
-    void recheckDefaultConnection(bool isOnline);
     void handleCanaryRequestError(const QNetworkReply::NetworkError &error);
     void handleCanaryRequestFinished();
     void emitFailureIfNeeded(); // due to timeout.
 
+    void connectionSelectorClosed(bool);
+    void defaultSessionConnectedChanged(bool);
+    void connmanAvailableChanged(bool);
+    void serviceErrorChanged(const QString &);
+    void networkStateChanged(const QString &);
+    void openConnectionDialog();
+
 private:
     QTimer m_timeoutTimer;
-    QNetworkConfigurationManager *m_networkConfigManager;
-    QNetworkSession *m_networkDefaultSession;
     QNetworkAccessManager *m_networkAccessManager;
     bool m_networkConfigReady;
     bool m_delayedAttemptToConnect;
     bool m_detectingNetworkConnection;
+
+    NetworkManager *netman;
+    NetworkService *defaultService;
+
 };
