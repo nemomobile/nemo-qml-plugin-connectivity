@@ -134,6 +134,11 @@ void ConnectionHelper::attemptToConnectNetwork()
     }
 }
 
+void ConnectionHelper::closeNetworkSession()
+{
+    // TODO
+}
+
 void ConnectionHelper::performRequest()
 {
     // sometimes connman service can be in 'ready' state but can still be used.
