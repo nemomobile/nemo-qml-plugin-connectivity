@@ -1,6 +1,6 @@
 Name:       nemo-qml-plugin-connectivity
 Summary:    Connectivity plugin for Nemo Mobile
-Version:    0.0.1
+Version:    0.0.4
 Release:    1
 Group:      System/Libraries
 License:    BSD
