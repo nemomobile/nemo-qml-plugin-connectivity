@@ -35,6 +35,8 @@
 #include <QUrl>
 #include <QString>
 #include <QtDBus/QDBusMessage>
+#include <QtDBus/QDBusConnection>
+
 #include <connman-qt5/networkmanager.h>
 
 ConnectionHelper::ConnectionHelper(QObject *parent)
@@ -43,7 +45,8 @@ ConnectionHelper::ConnectionHelper(QObject *parent)
     , m_networkConfigReady(false)
     , m_delayedAttemptToConnect(false)
     , m_detectingNetworkConnection(false)
-    , netman(NetworkManagerFactory::createInstance())
+    , netman(NetworkManagerFactory::createInstance()),
+      connmanIsReady(false)
 {
     connect(&m_timeoutTimer, SIGNAL(timeout()), this, SLOT(emitFailureIfNeeded()));
     m_timeoutTimer.setSingleShot(true);
@@ -51,6 +54,8 @@ ConnectionHelper::ConnectionHelper(QObject *parent)
 
     connect(netman,SIGNAL(availabilityChanged(bool)),this,SLOT(connmanAvailableChanged(bool)));
     connect(netman,SIGNAL(stateChanged(QString)),this,SLOT(networkStateChanged(QString)));
+
+    connmanIsAvailable = QDBusConnection::systemBus().interface()->isServiceRegistered("net.connman");
 }
 
 ConnectionHelper::~ConnectionHelper()
@@ -65,7 +70,10 @@ void ConnectionHelper::connmanAvailableChanged(bool available)
             m_delayedAttemptToConnect = false;
             attemptToConnectNetwork();
         }
+    } else {
+        connmanIsReady = false;
     }
+    connmanIsAvailable = available;
 }
 
 /*
@@ -113,11 +121,9 @@ bool ConnectionHelper::haveNetworkConnectivity() const
 */
 void ConnectionHelper::attemptToConnectNetwork()
 {
-
     // set up a timeout error emission trigger after 2 minutes, unless we manage to connect in the meantime.
     m_detectingNetworkConnection = true;
     m_timeoutTimer.start(300000);
-
     if (netman->defaultRoute()->state() != "online") {
         if (netman->defaultRoute()->state() == "ready") {
             // we already have an open session, but something isn't quite right.  Ensure that the
@@ -234,14 +240,6 @@ void ConnectionHelper::connectionSelectorClosed(bool b)
     }
 }
 
-void ConnectionHelper::defaultSessionConnectedChanged(bool b)
-{
-    if (b) {
-        m_detectingNetworkConnection = false;
-        emit networkConnectivityEstablished();
-    }
-}
-
 void ConnectionHelper::serviceErrorChanged(const QString &errorString)
 {
     if (errorString.isEmpty())
@@ -252,6 +250,10 @@ void ConnectionHelper::serviceErrorChanged(const QString &errorString)
 
 void ConnectionHelper::networkStateChanged(const QString &state)
 {
-    if (m_detectingNetworkConnection && state == "online") //only online, as ready may or may not mean good connection
-        defaultSessionConnectedChanged(true);
+    if (state == "online") {
+        m_detectingNetworkConnection = false;
+        emit networkConnectivityEstablished();
+    } else if (state == "idle") {
+        emit networkConnectivityUnavailable();
+    }
 }

@@ -66,7 +66,6 @@ private Q_SLOTS:
     void emitFailureIfNeeded(); // due to timeout.
 
     void connectionSelectorClosed(bool);
-    void defaultSessionConnectedChanged(bool);
     void connmanAvailableChanged(bool);
     void serviceErrorChanged(const QString &);
     void networkStateChanged(const QString &);
@@ -78,6 +77,8 @@ private:
     bool m_networkConfigReady;
     bool m_delayedAttemptToConnect;
     bool m_detectingNetworkConnection;
+    bool connmanIsReady;
+    bool connmanIsAvailable;
 
     NetworkManager *netman;
     NetworkService *defaultService;
