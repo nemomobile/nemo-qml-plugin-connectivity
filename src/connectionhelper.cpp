@@ -97,7 +97,7 @@ void ConnectionHelper::connmanAvailableChanged(bool available)
 */
 bool ConnectionHelper::haveNetworkConnectivity() const
 {
-    if (netman->defaultRoute()->connected())
+    if (netman->defaultRoute() && netman->defaultRoute()->connected())
         return true;
     return false;
 }
@@ -121,6 +121,10 @@ bool ConnectionHelper::haveNetworkConnectivity() const
 */
 void ConnectionHelper::attemptToConnectNetwork()
 {
+    if (!netman->defaultRoute()) {
+        emitFailureIfNeeded();
+        return;
+    }
     // set up a timeout error emission trigger after 2 minutes, unless we manage to connect in the meantime.
     m_detectingNetworkConnection = true;
     m_timeoutTimer.start(300000);
