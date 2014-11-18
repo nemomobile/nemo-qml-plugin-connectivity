@@ -60,7 +60,6 @@ Q_SIGNALS:
 
 private Q_SLOTS:
     void performRequest();
-    void handleNetworkSessionError();
     void handleCanaryRequestError(const QNetworkReply::NetworkError &error);
     void handleCanaryRequestFinished();
     void emitFailureIfNeeded(); // due to timeout.
